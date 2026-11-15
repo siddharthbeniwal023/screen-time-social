@@ -594,9 +594,9 @@ function CompareScreen({
           <View style={styles.compareIntroCopy}>
             <Text style={styles.compareIntroEyebrow}>TODAY, TOGETHER</Text>
             <Text style={styles.compareIntroTitle}>Less scrolling. More living.</Text>
-            <Text style={styles.compareIntroText}>
+            {/* <Text style={styles.compareIntroText}>
               Compare privately with people you trust. Lowest screen time leads.
-            </Text>
+            </Text> */}
           </View>
           <View style={styles.compareIntroMark}>
             <Text style={styles.compareIntroMarkText}>{everyone.length}</Text>
@@ -634,9 +634,9 @@ function CompareScreen({
             </View>
             <View style={styles.emptyGroupCopy}>
               <Text style={styles.emptyGroupTitle}>Create your first group</Text>
-              <Text style={styles.emptyGroupText}>
+              {/* <Text style={styles.emptyGroupText}>
                 Pick friends and start a private comparison.
-              </Text>
+              </Text> */}
             </View>
             <Text style={styles.settingChevron}>›</Text>
           </Pressable>
@@ -651,7 +651,7 @@ function CompareScreen({
         <View style={styles.sectionHeading}>
           <View>
             <Text style={styles.sectionTitle}>Everyone</Text>
-            <Text style={styles.compareSectionHint}>You and all accepted friends</Text>
+            {/* <Text style={styles.compareSectionHint}>You and all accepted friends</Text> */}
           </View>
           <Pressable onPress={onManageFriends}>
             <Text style={styles.textButton}>
