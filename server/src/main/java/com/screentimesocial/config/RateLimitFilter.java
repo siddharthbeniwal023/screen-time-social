@@ -84,6 +84,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 || path.startsWith("/api/v1/usernames/"))) {
             return new EndpointLimit("username-search", searchLimit);
         }
+        if ("POST".equals(method) && path.equals("/api/v1/groups/join")) {
+            return new EndpointLimit("group-join", searchLimit);
+        }
         return null;
     }
 

@@ -137,6 +137,81 @@ class SocialServiceIntegrationTest {
     }
 
     @Test
+    void groupCreatorCanAddAcceptedFriendsAndCompareDetailedUsage() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse first = register("First", "first", "first@example.com").user();
+        ApiModels.UserResponse second = register("Second", "second", "second@example.com").user();
+        acceptFriendship(owner, first);
+        acceptFriendship(owner, second);
+        socialService.syncUsage(owner.id(), usage(80));
+        socialService.syncUsage(first.id(), usage(120));
+        socialService.syncUsage(second.id(), usage(60));
+
+        ApiModels.ComparisonGroupResponse group = socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest(
+                        "Weekend reset", List.of(first.id(), second.id())),
+                LocalDate.now());
+
+        assertThat(group.name()).isEqualTo("Weekend reset");
+        assertThat(group.inviteCode()).hasSize(8);
+        assertThat(group.members())
+                .extracting(ApiModels.ComparisonGroupMemberResponse::username)
+                .containsExactly("second", "owner", "first");
+        assertThat(group.members().getFirst().usage().apps()).hasSize(1);
+    }
+
+    @Test
+    void creatorCannotDirectlyAddSomeoneWhoIsNotAnAcceptedFriend() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse stranger = register("Stranger", "stranger", "stranger@example.com").user();
+
+        assertThatThrownBy(() -> socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest("Private", List.of(stranger.id())),
+                LocalDate.now()))
+                .isInstanceOf(SocialService.ForbiddenException.class);
+    }
+
+    @Test
+    void joiningAGroupMakesTheNewMemberFriendsWithEveryone() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse first = register("First", "first", "first@example.com").user();
+        ApiModels.UserResponse joiner = register("Joiner", "joiner", "joiner@example.com").user();
+        acceptFriendship(owner, first);
+        ApiModels.ComparisonGroupResponse created = socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest("Three of us", List.of(first.id())),
+                LocalDate.now());
+
+        ApiModels.ComparisonGroupResponse joined = socialService.joinComparisonGroup(
+                joiner.id(), created.inviteCode(), LocalDate.now());
+
+        assertThat(joined.members())
+                .extracting(ApiModels.ComparisonGroupMemberResponse::username)
+                .containsExactlyInAnyOrder("owner", "first", "joiner");
+        assertThat(socialService.getCircle(joiner.id(), LocalDate.now()))
+                .extracting(ApiModels.CircleMember::username)
+                .containsExactlyInAnyOrder("joiner", "owner", "first");
+    }
+
+    @Test
+    void nonMembersCannotReadAGroup() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse friend = register("Friend", "friend", "friend@example.com").user();
+        ApiModels.UserResponse stranger = register("Stranger", "stranger", "stranger@example.com").user();
+        acceptFriendship(owner, friend);
+        ApiModels.ComparisonGroupResponse group = socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest("Private", List.of(friend.id())),
+                LocalDate.now());
+
+        assertThatThrownBy(() -> socialService.getComparisonGroup(
+                group.id(), stranger.id(), LocalDate.now()))
+                .isInstanceOf(SocialService.ForbiddenException.class);
+    }
+
+    @Test
     void protectedRoutesRejectMissingTokens() throws Exception {
         mockMvc.perform(get("/api/v1/me"))
                 .andExpect(status().isUnauthorized());
@@ -197,5 +272,11 @@ class SocialServiceIntegrationTest {
                 totalMinutes,
                 20,
                 List.of(new ApiModels.AppUsageRequest("app.demo", "Demo", 30)));
+    }
+
+    private void acceptFriendship(ApiModels.UserResponse first, ApiModels.UserResponse second) {
+        ApiModels.FriendshipResponse request = socialService.requestFriend(
+                first.id(), second.username());
+        socialService.acceptFriend(request.id(), second.id());
     }
 }

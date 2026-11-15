@@ -1,4 +1,3 @@
-import {Platform} from 'react-native';
 import {clearStoredSession, loadSession, saveSession} from './session';
 
 export type ApiUser = {
@@ -32,17 +31,38 @@ export type FriendshipResponse = {
   updatedAt: string;
 };
 
+export type ApiUsage = {
+  date: string;
+  totalMinutes: number;
+  pickups: number;
+  apps: {appId: string; displayName: string; minutes: number}[];
+  syncedAt: string;
+};
+
 export type CircleMember = {
   userId: string;
   displayName: string;
   username: string;
-  usage?: {
-    date: string;
-    totalMinutes: number;
-    pickups: number;
-    apps: {appId: string; displayName: string; minutes: number}[];
-    syncedAt: string;
-  };
+  usage?: ApiUsage;
+};
+
+export type ComparisonGroupMember = {
+  userId: string;
+  displayName: string;
+  username: string;
+  role: 'OWNER' | 'MEMBER';
+  joinedAt: string;
+  usage?: ApiUsage;
+};
+
+export type ComparisonGroup = {
+  id: string;
+  name: string;
+  inviteCode: string;
+  ownerId: string;
+  members: ComparisonGroupMember[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 type DailyUsageInput = {
@@ -51,10 +71,7 @@ type DailyUsageInput = {
   apps: {name: string; minutes: number}[];
 };
 
-const API_ORIGIN = Platform.select({
-  android: 'http://10.0.2.2:8080',
-  default: 'http://localhost:8080',
-});
+const API_ORIGIN = 'https://screen-time-social-production.up.railway.app';
 
 const API_URL = `${API_ORIGIN}/api/v1`;
 let accessToken: string | null = null;
@@ -203,6 +220,29 @@ export async function changeUsername(username: string): Promise<ApiUser> {
 export async function getCircle(): Promise<CircleMember[]> {
   const response = await authorizedFetch('/me/circle');
   return parseResponse<CircleMember[]>(response);
+}
+
+export async function getComparisonGroups(): Promise<ComparisonGroup[]> {
+  const response = await authorizedFetch('/me/groups');
+  return parseResponse<ComparisonGroup[]>(response);
+}
+
+export async function createComparisonGroup(name: string, memberUserIds: string[]) {
+  const response = await authorizedFetch('/groups', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, memberUserIds}),
+  });
+  return parseResponse<ComparisonGroup>(response);
+}
+
+export async function joinComparisonGroup(inviteCode: string) {
+  const response = await authorizedFetch('/groups/join', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({inviteCode}),
+  });
+  return parseResponse<ComparisonGroup>(response);
 }
 
 export async function getPendingFriendRequests(): Promise<FriendshipResponse[]> {

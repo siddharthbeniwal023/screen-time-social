@@ -1,3 +1,4 @@
+com/screentimesocial/api/ApiModels$ComparisonGroupMemberResponse.class
 com/screentimesocial/api/ApiModels$LogoutRequest.class
 com/screentimesocial/service/AuthService.class
 com/screentimesocial/service/SocialService$ForbiddenException.class
@@ -15,7 +16,9 @@ com/screentimesocial/repository/RefreshTokenRepository.class
 com/screentimesocial/model/UserEntity.class
 com/screentimesocial/api/ApiModels$RegisterRequest.class
 com/screentimesocial/api/ApiModels.class
+com/screentimesocial/api/ApiModels$CreateComparisonGroupRequest.class
 com/screentimesocial/api/ApiModels$CircleMember.class
+com/screentimesocial/api/ApiModels$ComparisonGroupResponse.class
 com/screentimesocial/api/ApiExceptionHandler.class
 com/screentimesocial/api/ApiModels$UserResponse.class
 com/screentimesocial/model/DailyUsageEntity$AppUsageValue.class
@@ -29,16 +32,21 @@ com/screentimesocial/api/ApiModels$AuthResponse.class
 com/screentimesocial/api/ApiModels$FriendshipResponse.class
 com/screentimesocial/config/RateLimitFilter$RequestWindow.class
 com/screentimesocial/service/SocialService.class
+com/screentimesocial/model/ComparisonGroupEntity.class
 com/screentimesocial/config/RateLimitFilter$EndpointLimit.class
 com/screentimesocial/repository/FriendshipRepository.class
 com/screentimesocial/model/FriendshipEntity$Status.class
 com/screentimesocial/repository/UserRepository.class
 com/screentimesocial/config/SecurityConfig.class
 com/screentimesocial/model/FriendshipEntity.class
+com/screentimesocial/model/ComparisonGroupMemberEntity.class
+com/screentimesocial/api/ApiModels$JoinComparisonGroupRequest.class
 com/screentimesocial/service/SocialService$ConflictException.class
 com/screentimesocial/api/ApiModels$UsageResponse.class
+com/screentimesocial/model/ComparisonGroupMemberEntity$Role.class
 com/screentimesocial/service/AuthService$InvalidCredentialsException.class
 com/screentimesocial/api/ApiModels$AppUsageRequest.class
+com/screentimesocial/repository/ComparisonGroupRepository.class
 com/screentimesocial/config/RateLimitFilter$Decision.class
 com/screentimesocial/api/ApiModels$UpdateUsernameRequest.class
 com/screentimesocial/repository/DailyUsageRepository.class

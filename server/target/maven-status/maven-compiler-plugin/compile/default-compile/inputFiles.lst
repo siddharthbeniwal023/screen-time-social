@@ -6,10 +6,13 @@
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/config/RateLimitFilter.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/config/SecurityConfig.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/AppUsageEntity.java
+/Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/ComparisonGroupEntity.java
+/Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/ComparisonGroupMemberEntity.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/DailyUsageEntity.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/FriendshipEntity.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/RefreshTokenEntity.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/model/UserEntity.java
+/Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/repository/ComparisonGroupRepository.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/repository/DailyUsageRepository.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/repository/FriendshipRepository.java
 /Users/siddharthbeniwal/Documents/Dev/screen-time-social/server/src/main/java/com/screentimesocial/repository/RefreshTokenRepository.java

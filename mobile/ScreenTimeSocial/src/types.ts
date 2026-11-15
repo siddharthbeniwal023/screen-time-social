@@ -23,5 +23,23 @@ export type Friend = {
 export type NativeUsageResult = {
   hasPermission: boolean;
   totalMinutes: number;
+  pickups: number;
+  apps: AppUsage[];
+};
+
+export type WeeklyUsageDay = {
+  date: string;
+  label: string;
+  totalMinutes: number;
+  pickups: number;
+  isToday: boolean;
+};
+
+export type WeeklyUsageSummary = {
+  hasPermission: boolean;
+  totalMinutes: number;
+  averageMinutes: number;
+  pickups: number;
+  days: WeeklyUsageDay[];
   apps: AppUsage[];
 };

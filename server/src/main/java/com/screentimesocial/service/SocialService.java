@@ -2,9 +2,12 @@ package com.screentimesocial.service;
 
 import com.screentimesocial.api.ApiModels;
 import com.screentimesocial.model.AppUsageEntity;
+import com.screentimesocial.model.ComparisonGroupEntity;
+import com.screentimesocial.model.ComparisonGroupMemberEntity;
 import com.screentimesocial.model.DailyUsageEntity;
 import com.screentimesocial.model.FriendshipEntity;
 import com.screentimesocial.model.UserEntity;
+import com.screentimesocial.repository.ComparisonGroupRepository;
 import com.screentimesocial.repository.DailyUsageRepository;
 import com.screentimesocial.repository.FriendshipRepository;
 import com.screentimesocial.repository.UserRepository;
@@ -13,12 +16,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -27,15 +33,19 @@ public class SocialService {
     private final UserRepository userRepository;
     private final FriendshipRepository friendshipRepository;
     private final DailyUsageRepository dailyUsageRepository;
+    private final ComparisonGroupRepository comparisonGroupRepository;
+    private final SecureRandom secureRandom = new SecureRandom();
 
     public SocialService(
             UserRepository userRepository,
             FriendshipRepository friendshipRepository,
-            DailyUsageRepository dailyUsageRepository
+            DailyUsageRepository dailyUsageRepository,
+            ComparisonGroupRepository comparisonGroupRepository
     ) {
         this.userRepository = userRepository;
         this.friendshipRepository = friendshipRepository;
         this.dailyUsageRepository = dailyUsageRepository;
+        this.comparisonGroupRepository = comparisonGroupRepository;
     }
 
     @Transactional(readOnly = true)
@@ -169,6 +179,158 @@ public class SocialService {
         return members;
     }
 
+    @Transactional
+    public ApiModels.ComparisonGroupResponse createComparisonGroup(
+            UUID ownerId,
+            ApiModels.CreateComparisonGroupRequest request,
+            LocalDate date
+    ) {
+        UserEntity owner = requireUser(ownerId);
+        Set<UUID> requestedMemberIds = new HashSet<>(request.memberUserIds());
+        if (requestedMemberIds.size() != request.memberUserIds().size()) {
+            throw new ConflictException("Each group member can be selected only once");
+        }
+        if (requestedMemberIds.contains(ownerId)) {
+            throw new ConflictException("You are already included as the group owner");
+        }
+
+        Map<UUID, UserEntity> acceptedFriends = new LinkedHashMap<>();
+        friendshipRepository.findAcceptedForUser(ownerId).stream()
+                .map(friendship -> friendship.otherUser(ownerId))
+                .forEach(friend -> acceptedFriends.put(friend.getId(), friend));
+        if (!acceptedFriends.keySet().containsAll(requestedMemberIds)) {
+            throw new ForbiddenException("Only accepted friends can be added directly to a group");
+        }
+
+        ComparisonGroupEntity group = new ComparisonGroupEntity(
+                request.name().trim(), generateInviteCode(), owner);
+        requestedMemberIds.stream()
+                .map(acceptedFriends::get)
+                .forEach(friend -> group.addMember(friend, ComparisonGroupMemberEntity.Role.MEMBER));
+        try {
+            comparisonGroupRepository.saveAndFlush(group);
+        } catch (DataIntegrityViolationException exception) {
+            throw new ConflictException("The group could not be created. Please try again");
+        }
+        return toComparisonGroupResponse(group, date);
+    }
+
+    @Transactional
+    public ApiModels.ComparisonGroupResponse joinComparisonGroup(
+            UUID userId,
+            String requestedInviteCode,
+            LocalDate date
+    ) {
+        UserEntity joiningUser = requireUser(userId);
+        String inviteCode = requestedInviteCode.trim().toUpperCase(Locale.ROOT);
+        ComparisonGroupEntity group = comparisonGroupRepository
+                .findDetailedByInviteCode(inviteCode)
+                .orElseThrow(() -> new NotFoundException("No group found for that invite code"));
+        if (group.includes(userId)) {
+            return toComparisonGroupResponse(group, date);
+        }
+        if (group.getMembers().size() >= 20) {
+            throw new ConflictException("This group has reached its 20-member limit");
+        }
+
+        List<UserEntity> existingMembers = group.getMembers().stream()
+                .map(ComparisonGroupMemberEntity::getUser)
+                .toList();
+        existingMembers.forEach(member -> ensureAcceptedFriendship(joiningUser, member));
+        group.addMember(joiningUser, ComparisonGroupMemberEntity.Role.MEMBER);
+        try {
+            comparisonGroupRepository.saveAndFlush(group);
+        } catch (DataIntegrityViolationException exception) {
+            throw new ConflictException("You could not join this group. Please try again");
+        }
+        return toComparisonGroupResponse(group, date);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ApiModels.ComparisonGroupResponse> getComparisonGroups(
+            UUID userId,
+            LocalDate date
+    ) {
+        requireUser(userId);
+        return comparisonGroupRepository.findAllForMember(userId).stream()
+                .map(group -> toComparisonGroupResponse(group, date))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public ApiModels.ComparisonGroupResponse getComparisonGroup(
+            UUID groupId,
+            UUID userId,
+            LocalDate date
+    ) {
+        ComparisonGroupEntity group = comparisonGroupRepository.findDetailedById(groupId)
+                .orElseThrow(() -> new NotFoundException("Group not found"));
+        if (!group.includes(userId)) {
+            throw new ForbiddenException("Only group members can view this group");
+        }
+        return toComparisonGroupResponse(group, date);
+    }
+
+    private void ensureAcceptedFriendship(UserEntity first, UserEntity second) {
+        friendshipRepository.findActiveBetween(first.getId(), second.getId())
+                .ifPresentOrElse(friendship -> {
+                    if (friendship.getStatus() == FriendshipEntity.Status.PENDING) {
+                        friendship.accept();
+                    }
+                }, () -> friendshipRepository.save(FriendshipEntity.accepted(first, second)));
+    }
+
+    private String generateInviteCode() {
+        for (int attempt = 0; attempt < 20; attempt++) {
+            StringBuilder code = new StringBuilder(8);
+            for (int index = 0; index < 8; index++) {
+                code.append(INVITE_CODE_ALPHABET.charAt(
+                        secureRandom.nextInt(INVITE_CODE_ALPHABET.length())));
+            }
+            String candidate = code.toString();
+            if (!comparisonGroupRepository.existsByInviteCodeIgnoreCase(candidate)) {
+                return candidate;
+            }
+        }
+        throw new ConflictException("A unique invite code could not be generated. Please try again");
+    }
+
+    private ApiModels.ComparisonGroupResponse toComparisonGroupResponse(
+            ComparisonGroupEntity group,
+            LocalDate date
+    ) {
+        Set<UUID> memberIds = group.getMembers().stream()
+                .map(member -> member.getUser().getId())
+                .collect(java.util.stream.Collectors.toSet());
+        Map<UUID, DailyUsageEntity> usageByUser = new LinkedHashMap<>();
+        dailyUsageRepository.findByUserIdInAndUsageDate(memberIds, date)
+                .forEach(usage -> usageByUser.put(usage.getUserId(), usage));
+
+        List<ApiModels.ComparisonGroupMemberResponse> members = group.getMembers().stream()
+                .map(member -> {
+                    UserEntity user = member.getUser();
+                    DailyUsageEntity usage = usageByUser.get(user.getId());
+                    return new ApiModels.ComparisonGroupMemberResponse(
+                            user.getId(),
+                            user.getDisplayName(),
+                            user.getUsername(),
+                            member.getRole().name(),
+                            member.getJoinedAt(),
+                            usage == null ? null : toUsageResponse(usage));
+                })
+                .sorted(Comparator.comparingInt(member ->
+                        member.usage() == null ? Integer.MAX_VALUE : member.usage().totalMinutes()))
+                .toList();
+        return new ApiModels.ComparisonGroupResponse(
+                group.getId(),
+                group.getName(),
+                group.getInviteCode(),
+                group.getCreatedBy().getId(),
+                members,
+                group.getCreatedAt(),
+                group.getUpdatedAt());
+    }
+
     private UserEntity requireUser(UUID id) {
         return userRepository.findById(id).orElseThrow(() -> new NotFoundException("User not found"));
     }
@@ -223,4 +385,6 @@ public class SocialService {
             super(message);
         }
     }
+
+    private static final String INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 }

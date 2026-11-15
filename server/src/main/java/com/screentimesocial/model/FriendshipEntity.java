@@ -57,6 +57,12 @@ public class FriendshipEntity {
         this.updatedAt = now;
     }
 
+    public static FriendshipEntity accepted(UserEntity first, UserEntity second) {
+        FriendshipEntity friendship = new FriendshipEntity(first, second);
+        friendship.accept();
+        return friendship;
+    }
+
     public void accept() {
         this.status = Status.ACCEPTED;
         this.updatedAt = Instant.now();

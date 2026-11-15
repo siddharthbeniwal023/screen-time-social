@@ -88,6 +88,19 @@ public final class ApiModels {
     public record FriendRequest(@NotBlank String addresseeUsername) {
     }
 
+    public record CreateComparisonGroupRequest(
+            @NotBlank @Size(max = 60) String name,
+            @NotNull @Size(min = 1, max = 19) List<UUID> memberUserIds
+    ) {
+    }
+
+    public record JoinComparisonGroupRequest(
+            @NotBlank @Size(min = 6, max = 10)
+            @Pattern(regexp = "^[a-zA-Z0-9]+$", message = "must contain only letters and numbers")
+            String inviteCode
+    ) {
+    }
+
     public record SyncUsageRequest(
             @NotNull LocalDate date,
             @Min(0) @Max(1440) int totalMinutes,
@@ -141,6 +154,27 @@ public final class ApiModels {
             String displayName,
             String username,
             UsageResponse usage
+    ) {
+    }
+
+    public record ComparisonGroupMemberResponse(
+            UUID userId,
+            String displayName,
+            String username,
+            String role,
+            Instant joinedAt,
+            UsageResponse usage
+    ) {
+    }
+
+    public record ComparisonGroupResponse(
+            UUID id,
+            String name,
+            String inviteCode,
+            UUID ownerId,
+            List<ComparisonGroupMemberResponse> members,
+            Instant createdAt,
+            Instant updatedAt
     ) {
     }
 }

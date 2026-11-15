@@ -93,6 +93,46 @@ public class SocialController {
                 currentUserId(jwt), date == null ? LocalDate.now() : date);
     }
 
+    @PostMapping("/groups")
+    @ResponseStatus(HttpStatus.CREATED)
+    ApiModels.ComparisonGroupResponse createComparisonGroup(
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody ApiModels.CreateComparisonGroupRequest request
+    ) {
+        return socialService.createComparisonGroup(
+                currentUserId(jwt), request, LocalDate.now());
+    }
+
+    @PostMapping("/groups/join")
+    ApiModels.ComparisonGroupResponse joinComparisonGroup(
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody ApiModels.JoinComparisonGroupRequest request
+    ) {
+        return socialService.joinComparisonGroup(
+                currentUserId(jwt), request.inviteCode(), LocalDate.now());
+    }
+
+    @GetMapping("/me/groups")
+    List<ApiModels.ComparisonGroupResponse> comparisonGroups(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date
+    ) {
+        return socialService.getComparisonGroups(
+                currentUserId(jwt), date == null ? LocalDate.now() : date);
+    }
+
+    @GetMapping("/groups/{groupId}")
+    ApiModels.ComparisonGroupResponse comparisonGroup(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID groupId,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date
+    ) {
+        return socialService.getComparisonGroup(
+                groupId, currentUserId(jwt), date == null ? LocalDate.now() : date);
+    }
+
     private UUID currentUserId(Jwt jwt) {
         return UUID.fromString(jwt.getSubject());
     }
