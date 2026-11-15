@@ -206,6 +206,7 @@ class ScreenTimeModule(private val context: ReactApplicationContext) :
               } catch (_: Exception) {
                 usageEntry.key.substringAfterLast('.')
               }
+              item.putString("id", usageEntry.key)
               item.putString("name", label)
               item.putInt("minutes", (usageEntry.value / ONE_MINUTE_MILLIS).toInt())
               apps.pushMap(item)

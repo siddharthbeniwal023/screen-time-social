@@ -8,7 +8,7 @@ type AndroidUsageModule = {
     hasPermission: boolean;
     totalMinutes: number;
     pickups: number;
-    apps: {name: string; minutes: number}[];
+    apps: {id: string; name: string; minutes: number}[];
   }>;
   getWeeklyUsage(): Promise<{
     hasPermission: boolean;
@@ -22,7 +22,7 @@ type AndroidUsageModule = {
       pickups: number;
       isToday: boolean;
     }[];
-    apps: {name: string; minutes: number}[];
+    apps: {id: string; name: string; minutes: number}[];
   }>;
   openUsageAccessSettings(): Promise<void>;
 };

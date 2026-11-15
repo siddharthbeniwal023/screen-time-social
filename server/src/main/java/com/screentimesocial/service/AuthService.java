@@ -56,6 +56,10 @@ public class AuthService {
 
     @Transactional
     public ApiModels.AuthResponse register(ApiModels.RegisterRequest request) {
+        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new SocialService.InvalidRequestException(
+                    "Password must be at most 72 bytes when encoded as UTF-8");
+        }
         String email = normalizeEmail(request.email());
         String username = SocialService.normalizeUsername(request.username());
         if (userRepository.existsByEmailIgnoreCase(email)) {
@@ -80,6 +84,9 @@ public class AuthService {
 
     @Transactional
     public ApiModels.AuthResponse login(ApiModels.LoginRequest request) {
+        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new InvalidCredentialsException();
+        }
         UserEntity user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email()))
                 .orElseThrow(InvalidCredentialsException::new);
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {

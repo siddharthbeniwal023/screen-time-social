@@ -10,6 +10,8 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -32,6 +34,7 @@ public class ComparisonGroupEntity {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "created_by", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private UserEntity createdBy;
 
     @Column(name = "created_at", nullable = false)
@@ -69,6 +72,19 @@ public class ComparisonGroupEntity {
 
     public boolean includes(UUID userId) {
         return members.stream().anyMatch(member -> member.getUser().getId().equals(userId));
+    }
+
+    public boolean isOwner(UUID userId) {
+        return createdBy.getId().equals(userId);
+    }
+
+    public void removeMember(UUID userId) {
+        if (isOwner(userId)) {
+            throw new IllegalArgumentException("The group owner cannot be removed");
+        }
+        if (members.removeIf(member -> member.getUser().getId().equals(userId))) {
+            this.updatedAt = Instant.now();
+        }
     }
 
     public UUID getId() {

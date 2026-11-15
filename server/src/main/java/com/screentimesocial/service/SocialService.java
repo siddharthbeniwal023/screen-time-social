@@ -10,6 +10,7 @@ import com.screentimesocial.model.UserEntity;
 import com.screentimesocial.repository.ComparisonGroupRepository;
 import com.screentimesocial.repository.DailyUsageRepository;
 import com.screentimesocial.repository.FriendshipRepository;
+import com.screentimesocial.repository.RefreshTokenRepository;
 import com.screentimesocial.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -34,23 +35,47 @@ public class SocialService {
     private final FriendshipRepository friendshipRepository;
     private final DailyUsageRepository dailyUsageRepository;
     private final ComparisonGroupRepository comparisonGroupRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public SocialService(
             UserRepository userRepository,
             FriendshipRepository friendshipRepository,
             DailyUsageRepository dailyUsageRepository,
-            ComparisonGroupRepository comparisonGroupRepository
+            ComparisonGroupRepository comparisonGroupRepository,
+            RefreshTokenRepository refreshTokenRepository
     ) {
         this.userRepository = userRepository;
         this.friendshipRepository = friendshipRepository;
         this.dailyUsageRepository = dailyUsageRepository;
         this.comparisonGroupRepository = comparisonGroupRepository;
+        this.refreshTokenRepository = refreshTokenRepository;
     }
 
     @Transactional(readOnly = true)
     public ApiModels.UserResponse profile(UUID userId) {
         return toUserResponse(requireUser(userId));
+    }
+
+    @Transactional
+    public void deleteAccount(UUID userId) {
+        UserEntity user = requireUser(userId);
+        comparisonGroupRepository.findAllForMember(userId).forEach(group -> {
+            if (group.isOwner(userId)) {
+                comparisonGroupRepository.delete(group);
+            } else {
+                group.removeMember(userId);
+            }
+        });
+        comparisonGroupRepository.flush();
+        refreshTokenRepository.deleteAll(refreshTokenRepository.findAllByUser_Id(userId));
+        friendshipRepository.deleteAll(friendshipRepository.findAllForUser(userId));
+        dailyUsageRepository.deleteAll(dailyUsageRepository.findAllByUser_Id(userId));
+        refreshTokenRepository.flush();
+        friendshipRepository.flush();
+        dailyUsageRepository.flush();
+        userRepository.delete(user);
+        userRepository.flush();
     }
 
     @Transactional
@@ -68,6 +93,13 @@ public class SocialService {
         } catch (DataIntegrityViolationException exception) {
             throw new ConflictException("Username @" + username + " is already taken");
         }
+        return toUserResponse(user);
+    }
+
+    @Transactional
+    public ApiModels.UserResponse updatePrivacy(UUID userId, boolean shareAppBreakdown) {
+        UserEntity user = requireUser(userId);
+        user.changePrivacy(shareAppBreakdown);
         return toUserResponse(user);
     }
 
@@ -119,6 +151,33 @@ public class SocialService {
         return toFriendshipResponse(friendship);
     }
 
+    @Transactional
+    public ApiModels.FriendshipResponse declineFriend(UUID friendshipId, UUID userId) {
+        FriendshipEntity friendship = friendshipRepository.findDetailedById(friendshipId)
+                .orElseThrow(() -> new NotFoundException("Friend request not found"));
+        if (!friendship.getAddressee().getId().equals(userId)) {
+            throw new ForbiddenException("Only the recipient can decline this request");
+        }
+        if (friendship.getStatus() != FriendshipEntity.Status.PENDING) {
+            throw new ConflictException("This request is no longer pending");
+        }
+        friendship.decline();
+        return toFriendshipResponse(friendship);
+    }
+
+    @Transactional
+    public void removeFriend(UUID userId, UUID friendUserId) {
+        if (userId.equals(friendUserId)) {
+            throw new ConflictException("You cannot remove yourself");
+        }
+        FriendshipEntity friendship = friendshipRepository.findActiveBetween(userId, friendUserId)
+                .orElseThrow(() -> new NotFoundException("Friendship not found"));
+        if (friendship.getStatus() != FriendshipEntity.Status.ACCEPTED) {
+            throw new ConflictException("This friendship has not been accepted");
+        }
+        friendshipRepository.delete(friendship);
+    }
+
     @Transactional(readOnly = true)
     public List<ApiModels.FriendshipResponse> pendingRequests(UUID userId) {
         requireUser(userId);
@@ -135,7 +194,10 @@ public class SocialService {
         if (appMinutes > request.totalMinutes()) {
             throw new ConflictException("App minutes cannot exceed total screen time");
         }
-        long uniqueAppIds = request.apps().stream().map(ApiModels.AppUsageRequest::appId).distinct().count();
+        long uniqueAppIds = request.apps().stream()
+                .map(app -> normalizeAppId(app.appId()))
+                .distinct()
+                .count();
         if (uniqueAppIds != request.apps().size()) {
             throw new ConflictException("Each app can appear only once per day");
         }
@@ -147,9 +209,9 @@ public class SocialService {
                 request.pickups(),
                 request.apps().stream()
                         .map(app -> new DailyUsageEntity.AppUsageValue(
-                                app.appId(), app.displayName(), app.minutes()))
+                                normalizeAppId(app.appId()), app.displayName().trim(), app.minutes()))
                         .toList());
-        return toUsageResponse(dailyUsageRepository.save(usage));
+        return toUsageResponse(dailyUsageRepository.save(usage), true);
     }
 
     @Transactional(readOnly = true)
@@ -172,7 +234,9 @@ public class SocialService {
                     user.getId(),
                     user.getDisplayName(),
                     user.getUsername(),
-                    usage == null ? null : toUsageResponse(usage)));
+                    usage == null ? null : toUsageResponse(
+                            usage, user.getId().equals(viewerId) || user.isShareAppBreakdown()),
+                    user.getId().equals(viewerId) || user.isShareAppBreakdown()));
         });
         members.sort(Comparator.comparingInt(member ->
                 member.usage() == null ? Integer.MAX_VALUE : member.usage().totalMinutes()));
@@ -212,7 +276,7 @@ public class SocialService {
         } catch (DataIntegrityViolationException exception) {
             throw new ConflictException("The group could not be created. Please try again");
         }
-        return toComparisonGroupResponse(group, date);
+        return toComparisonGroupResponse(group, date, ownerId);
     }
 
     @Transactional
@@ -227,7 +291,7 @@ public class SocialService {
                 .findDetailedByInviteCode(inviteCode)
                 .orElseThrow(() -> new NotFoundException("No group found for that invite code"));
         if (group.includes(userId)) {
-            return toComparisonGroupResponse(group, date);
+            return toComparisonGroupResponse(group, date, userId);
         }
         if (group.getMembers().size() >= 20) {
             throw new ConflictException("This group has reached its 20-member limit");
@@ -243,7 +307,7 @@ public class SocialService {
         } catch (DataIntegrityViolationException exception) {
             throw new ConflictException("You could not join this group. Please try again");
         }
-        return toComparisonGroupResponse(group, date);
+        return toComparisonGroupResponse(group, date, userId);
     }
 
     @Transactional(readOnly = true)
@@ -253,7 +317,7 @@ public class SocialService {
     ) {
         requireUser(userId);
         return comparisonGroupRepository.findAllForMember(userId).stream()
-                .map(group -> toComparisonGroupResponse(group, date))
+                .map(group -> toComparisonGroupResponse(group, date, userId))
                 .toList();
     }
 
@@ -268,7 +332,21 @@ public class SocialService {
         if (!group.includes(userId)) {
             throw new ForbiddenException("Only group members can view this group");
         }
-        return toComparisonGroupResponse(group, date);
+        return toComparisonGroupResponse(group, date, userId);
+    }
+
+    @Transactional
+    public void leaveOrDeleteComparisonGroup(UUID groupId, UUID userId) {
+        ComparisonGroupEntity group = comparisonGroupRepository.findDetailedById(groupId)
+                .orElseThrow(() -> new NotFoundException("Group not found"));
+        if (!group.includes(userId)) {
+            throw new ForbiddenException("Only group members can leave this group");
+        }
+        if (group.isOwner(userId)) {
+            comparisonGroupRepository.delete(group);
+        } else {
+            group.removeMember(userId);
+        }
     }
 
     private void ensureAcceptedFriendship(UserEntity first, UserEntity second) {
@@ -297,7 +375,8 @@ public class SocialService {
 
     private ApiModels.ComparisonGroupResponse toComparisonGroupResponse(
             ComparisonGroupEntity group,
-            LocalDate date
+            LocalDate date,
+            UUID viewerId
     ) {
         Set<UUID> memberIds = group.getMembers().stream()
                 .map(member -> member.getUser().getId())
@@ -310,13 +389,16 @@ public class SocialService {
                 .map(member -> {
                     UserEntity user = member.getUser();
                     DailyUsageEntity usage = usageByUser.get(user.getId());
+                    boolean appBreakdownShared = user.getId().equals(viewerId)
+                            || user.isShareAppBreakdown();
                     return new ApiModels.ComparisonGroupMemberResponse(
                             user.getId(),
                             user.getDisplayName(),
                             user.getUsername(),
                             member.getRole().name(),
                             member.getJoinedAt(),
-                            usage == null ? null : toUsageResponse(usage));
+                            usage == null ? null : toUsageResponse(usage, appBreakdownShared),
+                            appBreakdownShared);
                 })
                 .sorted(Comparator.comparingInt(member ->
                         member.usage() == null ? Integer.MAX_VALUE : member.usage().totalMinutes()))
@@ -341,7 +423,8 @@ public class SocialService {
 
     public static ApiModels.UserResponse toUserResponse(UserEntity user) {
         return new ApiModels.UserResponse(
-                user.getId(), user.getDisplayName(), user.getUsername(), user.getCreatedAt());
+                user.getId(), user.getDisplayName(), user.getUsername(), user.getCreatedAt(),
+                user.isShareAppBreakdown());
     }
 
     private static ApiModels.FriendshipResponse toFriendshipResponse(FriendshipEntity friendship) {
@@ -354,18 +437,27 @@ public class SocialService {
                 friendship.getUpdatedAt());
     }
 
-    private static ApiModels.UsageResponse toUsageResponse(DailyUsageEntity usage) {
-        List<ApiModels.AppUsageResponse> apps = usage.getApps().stream()
-                .sorted(Comparator.comparingInt(AppUsageEntity::getMinutes).reversed())
-                .map(app -> new ApiModels.AppUsageResponse(
-                        app.getAppId(), app.getDisplayName(), app.getMinutes()))
-                .toList();
+    private static ApiModels.UsageResponse toUsageResponse(
+            DailyUsageEntity usage,
+            boolean includeApps
+    ) {
+        List<ApiModels.AppUsageResponse> apps = includeApps
+                ? usage.getApps().stream()
+                        .sorted(Comparator.comparingInt(AppUsageEntity::getMinutes).reversed())
+                        .map(app -> new ApiModels.AppUsageResponse(
+                                app.getAppId(), app.getDisplayName(), app.getMinutes()))
+                        .toList()
+                : List.of();
         return new ApiModels.UsageResponse(
                 usage.getUsageDate(),
                 usage.getTotalMinutes(),
                 usage.getPickups(),
                 apps,
                 usage.getSyncedAt());
+    }
+
+    private static String normalizeAppId(String appId) {
+        return appId.trim().toLowerCase(Locale.ROOT);
     }
 
     public static class NotFoundException extends RuntimeException {
@@ -382,6 +474,12 @@ public class SocialService {
 
     public static class ForbiddenException extends RuntimeException {
         public ForbiddenException(String message) {
+            super(message);
+        }
+    }
+
+    public static class InvalidRequestException extends RuntimeException {
+        public InvalidRequestException(String message) {
             super(message);
         }
     }

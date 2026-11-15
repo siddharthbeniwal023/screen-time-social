@@ -3,6 +3,13 @@ import * as Keychain from 'react-native-keychain';
 export type StoredSession = {
   accessToken: string;
   refreshToken: string;
+  user?: {
+    id: string;
+    displayName: string;
+    username: string;
+    createdAt: string;
+    shareAppBreakdown: boolean;
+  };
 };
 
 const SESSION_SERVICE = 'com.screentimesocial.session';
@@ -26,7 +33,12 @@ export async function loadSession(): Promise<StoredSession | null> {
     const session = JSON.parse(credentials.password) as Partial<StoredSession>;
     if (
       typeof session.accessToken !== 'string' ||
-      typeof session.refreshToken !== 'string'
+      typeof session.refreshToken !== 'string' ||
+      (session.user !== undefined &&
+        (typeof session.user.id !== 'string' ||
+          typeof session.user.displayName !== 'string' ||
+          typeof session.user.username !== 'string' ||
+          typeof session.user.createdAt !== 'string'))
     ) {
       await clearStoredSession();
       return null;

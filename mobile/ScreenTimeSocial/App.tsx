@@ -7,11 +7,14 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
+  Share,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TextInput,
+  Switch,
   View,
 } from 'react-native';
 import {
@@ -21,17 +24,25 @@ import {
 } from 'react-native-safe-area-context';
 import {
   createComparisonGroup,
+  changePrivacy,
   changeUsername,
   clearSession,
   acceptFriendRequest,
+  declineFriendRequest,
+  deleteAccount,
   findUser,
   getCircle,
   getComparisonGroups,
+  getProfile,
   getPendingFriendRequests,
   joinComparisonGroup,
+  leaveComparisonGroup,
   login,
   register,
+  removeFriend,
   restoreSession,
+  SessionExpiredError,
+  setSessionExpiredHandler,
   sendFriendRequest,
   syncDailyUsage,
 } from './src/api';
@@ -75,10 +86,10 @@ const fonts = {
 };
 
 const demoApps: AppUsage[] = [
-  {name: 'Instagram', minutes: 74, color: '#E985B4'},
-  {name: 'YouTube', minutes: 52, color: '#FF786E'},
-  {name: 'WhatsApp', minutes: 39, color: '#70C99A'},
-  {name: 'Chrome', minutes: 28, color: '#7EA7F7'},
+  {id: 'demo.instagram', name: 'Instagram', minutes: 74, color: '#E985B4'},
+  {id: 'demo.youtube', name: 'YouTube', minutes: 52, color: '#FF786E'},
+  {id: 'demo.whatsapp', name: 'WhatsApp', minutes: 39, color: '#70C99A'},
+  {id: 'demo.chrome', name: 'Chrome', minutes: 28, color: '#7EA7F7'},
 ];
 
 const initialFriends: Friend[] = [];
@@ -138,6 +149,26 @@ function AppContent() {
   const [pendingRequests, setPendingRequests] = useState<FriendshipResponse[]>([]);
   const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
   const [isRestoringSession, setIsRestoringSession] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const resetAppState = useCallback(() => {
+    setCurrentUser(null);
+    setFriends([]);
+    setCircleMembers([]);
+    setGroups([]);
+    setPendingRequests([]);
+    setUsage(demoUsage);
+    setIsDemo(true);
+    setTab('compare');
+  }, []);
+
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      resetAppState();
+      Alert.alert('Session expired', 'Please sign in again to continue.');
+    });
+    return () => setSessionExpiredHandler(null);
+  }, [resetAppState]);
 
   useEffect(() => {
     let mounted = true;
@@ -161,20 +192,24 @@ function AppContent() {
     if (!currentUser) {
       return;
     }
-    const [circle, pending, comparisonGroups] = await Promise.all([
+    const [circleResult, pendingResult, groupsResult] = await Promise.allSettled([
       getCircle(),
       getPendingFriendRequests(),
-      getComparisonGroups().catch(() => []),
+      getComparisonGroups(),
     ]);
+    const circle = circleResult.status === 'fulfilled' ? circleResult.value : null;
+    const pending = pendingResult.status === 'fulfilled' ? pendingResult.value : null;
+    const comparisonGroups = groupsResult.status === 'fulfilled' ? groupsResult.value : null;
     const palette = ['#D9D3FF', '#FFCF99', '#BDE3D0', '#E985B4'];
-    setFriends(
-      circle
+    if (circle) {
+      setFriends(
+        circle
         .filter(member => member.userId !== currentUser.id)
         .map((member, index) => ({
           id: member.userId,
           name: member.displayName,
           username: member.username,
-          minutes: member.usage?.totalMinutes ?? 0,
+          minutes: member.usage?.totalMinutes,
           initials: member.displayName
             .split(' ')
             .map(part => part.charAt(0))
@@ -183,10 +218,20 @@ function AppContent() {
             .toUpperCase(),
           color: palette[index % palette.length],
         })),
-    );
-    setCircleMembers(circle);
-    setGroups(comparisonGroups);
-    setPendingRequests(pending);
+      );
+      setCircleMembers(circle);
+    }
+    if (comparisonGroups) {
+      setGroups(comparisonGroups);
+    }
+    if (pending) {
+      setPendingRequests(pending);
+    }
+    const failed = [circleResult, pendingResult, groupsResult]
+      .find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') {
+      throw failed.reason;
+    }
   }, [currentUser]);
 
   useEffect(() => {
@@ -207,7 +252,15 @@ function AppContent() {
           'On the next screen, choose Screen Time Social and turn on usage access.',
           [
             {text: 'Not now', style: 'cancel'},
-            {text: 'Open settings', onPress: openUsageAccessSettings},
+            {
+              text: 'Open settings',
+              onPress: () => openUsageAccessSettings().catch(caught => {
+                Alert.alert(
+                  'Could not open settings',
+                  caught instanceof Error ? caught.message : 'Please open Usage Access manually.',
+                );
+              }),
+            },
           ],
         );
         return;
@@ -221,54 +274,90 @@ function AppContent() {
       };
       setUsage(connectedUsage);
       setIsDemo(false);
-      if (connectedUsage.apps.length > 0) {
-        try {
-          await syncDailyUsage(connectedUsage);
-          await refreshSocial();
-        } catch {
-          if (showSyncError) {
-            Alert.alert(
-              'Saved on this device only',
-              'Screen time could not be synced to the server. Try again when the API is available.',
-            );
-          }
+      try {
+        await syncDailyUsage(connectedUsage);
+      } catch (caught) {
+        if (caught instanceof SessionExpiredError) {
+          throw caught;
+        }
+        if (showSyncError) {
+          Alert.alert(
+            'Saved on this device only',
+            'Screen time could not be synced to the server. Try again when the API is available.',
+          );
         }
       }
     },
-    [refreshSocial, usage.changePercent],
+    [usage.changePercent],
   );
 
   const connectScreenTime = async () => {
-    if (Platform.OS === 'android') {
-      await refreshAndroidUsage(true, true);
-      return;
-    }
+    try {
+      if (Platform.OS === 'android') {
+        await refreshAndroidUsage(true, true);
+        await refreshSocial().catch(() => undefined);
+        return;
+      }
 
-    Alert.alert(
-      'iOS setup required',
-      'Screen Time access will become available after the Family Controls entitlement and native Device Activity report are configured.',
-    );
+      Alert.alert(
+        'iOS setup required',
+        'Screen Time access will become available after the Family Controls entitlement and native Device Activity report are configured.',
+      );
+    } catch (caught) {
+      if (!(caught instanceof SessionExpiredError)) {
+        Alert.alert(
+          'Could not connect screen time',
+          caught instanceof Error ? caught.message : 'Please try again.',
+        );
+      }
+    }
   };
 
   useEffect(() => {
-    if (Platform.OS !== 'android' || !currentUser) {
+    if (!currentUser) {
       return;
     }
 
-    const refreshSilently = () => {
-      refreshAndroidUsage(false, false).catch(() => {
-        // Keep the previous reading if Android usage data is temporarily unavailable.
-      });
+    const refreshSilently = async () => {
+      if (Platform.OS === 'android') {
+        await refreshAndroidUsage(false, false);
+      }
+      await refreshSocial();
     };
 
-    refreshSilently();
+    refreshSilently().catch(() => {
+      // Keep cached values while the device or API is temporarily unavailable.
+    });
     const subscription = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
-        refreshSilently();
+        refreshSilently().catch(() => {
+          // Keep cached values until the next successful refresh.
+        });
       }
     });
     return () => subscription.remove();
-  }, [currentUser, refreshAndroidUsage]);
+  }, [currentUser, refreshAndroidUsage, refreshSocial]);
+
+  const refreshAll = useCallback(async () => {
+    if (!currentUser || refreshing) {
+      return;
+    }
+    setRefreshing(true);
+    try {
+      if (Platform.OS === 'android') {
+        await refreshAndroidUsage(false, true);
+      }
+      const [user] = await Promise.all([getProfile(), refreshSocial()]);
+      setCurrentUser(user);
+    } catch (caught) {
+      Alert.alert(
+        'Could not refresh',
+        caught instanceof Error ? caught.message : 'Check your connection and try again.',
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  }, [currentUser, refreshAndroidUsage, refreshSocial, refreshing]);
 
   if (isRestoringSession) {
     return (
@@ -301,10 +390,13 @@ function AppContent() {
             currentUser={currentUser}
             friends={friends}
             groups={groups}
+            isDemo={isDemo}
             onGroupsChange={refreshSocial}
             onManageFriends={() => setTab('friends')}
             pendingCount={pendingRequests.length}
             usage={usage}
+            onRefresh={refreshAll}
+            refreshing={refreshing}
           />
         )}
         {tab === 'today' && (
@@ -313,15 +405,23 @@ function AppContent() {
             usage={usage}
             friends={friends}
             isDemo={isDemo}
+            syncedUsage={usageFromApi(
+              circleMembers.find(member => member.userId === currentUser.id)?.usage,
+            )}
             onConnect={connectScreenTime}
             onShowFriends={() => setTab('friends')}
+            onRefresh={refreshAll}
+            refreshing={refreshing}
           />
         )}
         {tab === 'friends' && (
           <FriendsScreen
             friends={friends}
+            currentUser={currentUser}
             pendingRequests={pendingRequests}
             onSocialChange={refreshSocial}
+            onRefresh={refreshAll}
+            refreshing={refreshing}
           />
         )}
         {tab === 'profile' && (
@@ -329,13 +429,14 @@ function AppContent() {
             isDemo={isDemo}
             user={currentUser}
             onUserChange={setCurrentUser}
+            onConnect={connectScreenTime}
+            onRefresh={refreshAll}
+            refreshing={refreshing}
             onLogout={() => {
-              setCurrentUser(null);
-              setTab('compare');
-              setGroups([]);
-              setCircleMembers([]);
+              resetAppState();
               clearSession().catch(() => undefined);
             }}
+            onAccountDeleted={resetAppState}
           />
         )}
         <BottomNav tab={tab} onChange={setTab} bottomInset={insets.bottom} />
@@ -354,12 +455,31 @@ function AuthScreen({onAuthenticated}: {onAuthenticated: (user: ApiUser) => void
   const [error, setError] = useState('');
 
   const submit = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedUsername = username.trim().replace(/^@/, '').toLowerCase();
+    if (!normalizedEmail || !password) {
+      setError('Enter your email and password.');
+      return;
+    }
+    if (mode === 'register' && (!displayName.trim() || normalizedUsername.length < 3)) {
+      setError('Enter your name and a username with at least 3 characters.');
+      return;
+    }
+    if (mode === 'register' && password.length < 10) {
+      setError('Use a password with at least 10 characters.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const user = mode === 'register'
-        ? await register({displayName, username, email, password})
-        : await login(email, password);
+        ? await register({
+            displayName: displayName.trim(),
+            username: normalizedUsername,
+            email: normalizedEmail,
+            password,
+          })
+        : await login(normalizedEmail, password);
       onAuthenticated(user);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to authenticate');
@@ -392,6 +512,7 @@ function AuthScreen({onAuthenticated}: {onAuthenticated: (user: ApiUser) => void
             <>
               <AuthField
                 autoCapitalize="words"
+                autoComplete="name"
                 label="Name"
                 onChangeText={setDisplayName}
                 placeholder="Your name"
@@ -399,6 +520,7 @@ function AuthScreen({onAuthenticated}: {onAuthenticated: (user: ApiUser) => void
               />
               <AuthField
                 autoCapitalize="none"
+                autoComplete="username-new"
                 label="Username"
                 onChangeText={setUsername}
                 placeholder="your_unique_name"
@@ -408,6 +530,7 @@ function AuthScreen({onAuthenticated}: {onAuthenticated: (user: ApiUser) => void
           )}
           <AuthField
             autoCapitalize="none"
+            autoComplete="email"
             keyboardType="email-address"
             label="Email"
             onChangeText={setEmail}
@@ -416,7 +539,9 @@ function AuthScreen({onAuthenticated}: {onAuthenticated: (user: ApiUser) => void
           />
           <AuthField
             autoCapitalize="none"
+            autoComplete={mode === 'register' ? 'password-new' : 'password'}
             label="Password"
+            onSubmitEditing={submit}
             onChangeText={setPassword}
             placeholder={mode === 'register' ? 'At least 10 characters' : 'Your password'}
             secureTextEntry
@@ -486,6 +611,7 @@ type ComparePerson = {
   initials: string;
   color: string;
   usage?: UsageSummary;
+  appBreakdownShared: boolean;
   isMe: boolean;
 };
 
@@ -515,6 +641,7 @@ function usageFromApi(usage?: ApiUsage): UsageSummary | undefined {
     pickups: usage.pickups,
     changePercent: 0,
     apps: usage.apps.map((app, index) => ({
+      id: app.appId,
       name: app.displayName,
       minutes: app.minutes,
       color: palette[index % palette.length],
@@ -527,18 +654,24 @@ function CompareScreen({
   currentUser,
   friends,
   groups,
+  isDemo,
   onGroupsChange,
   onManageFriends,
   pendingCount,
+  onRefresh,
+  refreshing,
   usage,
 }: {
   circleMembers: CircleMember[];
   currentUser: ApiUser;
   friends: Friend[];
   groups: ComparisonGroup[];
+  isDemo: boolean;
   onGroupsChange: () => Promise<void>;
   onManageFriends: () => void;
   pendingCount: number;
+  onRefresh: () => Promise<void>;
+  refreshing: boolean;
   usage: UsageSummary;
 }) {
   const [groupComposerMode, setGroupComposerMode] = useState<'create' | 'join' | null>(null);
@@ -546,13 +679,17 @@ function CompareScreen({
   const [selectedPerson, setSelectedPerson] = useState<ComparePerson | null>(null);
 
   const everyone = useMemo<ComparePerson[]>(() => {
+    const currentUsage = isDemo
+      ? usageFromApi(circleMembers.find(member => member.userId === currentUser.id)?.usage)
+      : usage;
     const people: ComparePerson[] = [{
       id: currentUser.id,
       name: 'You',
       username: currentUser.username,
       initials: initialsFor(currentUser.displayName),
       color: colors.lime,
-      usage,
+      usage: currentUsage,
+      appBreakdownShared: true,
       isMe: true,
     }];
     circleMembers
@@ -565,6 +702,7 @@ function CompareScreen({
           initials: initialsFor(member.displayName),
           color: colorForIdentity(member.userId),
           usage: usageFromApi(member.usage),
+          appBreakdownShared: member.appBreakdownShared !== false,
           isMe: false,
         });
       });
@@ -573,7 +711,7 @@ function CompareScreen({
       const secondMinutes = second.usage?.totalMinutes ?? Number.MAX_SAFE_INTEGER;
       return firstMinutes - secondMinutes;
     });
-  }, [circleMembers, currentUser, usage]);
+  }, [circleMembers, currentUser, isDemo, usage]);
 
   const personFromGroupMember = (member: ComparisonGroupMember): ComparePerson => ({
     id: member.userId,
@@ -581,13 +719,26 @@ function CompareScreen({
     username: member.username,
     initials: initialsFor(member.displayName),
     color: member.userId === currentUser.id ? colors.lime : colorForIdentity(member.userId),
-    usage: member.userId === currentUser.id ? usage : usageFromApi(member.usage),
+    usage: member.userId === currentUser.id && !isDemo
+      ? usage
+      : usageFromApi(member.usage),
+    appBreakdownShared: member.userId === currentUser.id || member.appBreakdownShared !== false,
     isMe: member.userId === currentUser.id,
   });
 
   return (
     <>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            colors={[colors.green]}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
+            tintColor={colors.green}
+          />
+        }
+        showsVerticalScrollIndicator={false}>
         <ScreenHeader eyebrow="YOUR CIRCLES" title="Compare" />
 
         <View style={styles.compareIntroCard}>
@@ -621,7 +772,7 @@ function CompareScreen({
                 group={group}
                 key={group.id}
                 onPress={() => setSelectedGroup(group)}
-                usage={usage}
+                usage={isDemo ? undefined : usage}
               />
             ))}
           </ScrollView>
@@ -667,7 +818,7 @@ function CompareScreen({
               onPress={() => setSelectedPerson(person)}
               person={person}
               rank={index + 1}
-              yourMinutes={usage.totalMinutes}
+              yourMinutes={everyone.find(candidate => candidate.isMe)?.usage?.totalMinutes}
             />
           ))}
         </View>
@@ -698,8 +849,12 @@ function CompareScreen({
         currentUserId={currentUser.id}
         group={selectedGroup}
         onClose={() => setSelectedGroup(null)}
+        onGroupChange={async () => {
+          await onGroupsChange();
+          setSelectedGroup(null);
+        }}
         onSelectMember={member => setSelectedPerson(personFromGroupMember(member))}
-        usage={usage}
+        usage={isDemo ? undefined : usage}
       />
 
       <PersonUsageModal person={selectedPerson} onClose={() => setSelectedPerson(null)} />
@@ -716,12 +871,12 @@ function GroupCard({
   currentUserId: string;
   group: ComparisonGroup;
   onPress: () => void;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }) {
   const rankedMembers = group.members.map(member => ({
     ...member,
     minutes: member.userId === currentUserId
-      ? usage.totalMinutes
+      ? usage?.totalMinutes ?? member.usage?.totalMinutes
       : member.usage?.totalMinutes,
   })).sort((first, second) =>
     (first.minutes ?? Number.MAX_SAFE_INTEGER) - (second.minutes ?? Number.MAX_SAFE_INTEGER));
@@ -768,13 +923,17 @@ function ComparisonRow({
   onPress: () => void;
   person: ComparePerson;
   rank: number;
-  yourMinutes: number;
+  yourMinutes?: number;
 }) {
   const minutes = person.usage?.totalMinutes;
-  const difference = minutes === undefined ? 0 : minutes - yourMinutes;
+  const difference = minutes === undefined || yourMinutes === undefined
+    ? 0
+    : minutes - yourMinutes;
   let comparison = 'Not synced today';
   if (person.isMe) {
     comparison = 'Your screen time';
+  } else if (minutes !== undefined && yourMinutes === undefined) {
+    comparison = 'Synced today';
   } else if (minutes !== undefined && difference === 0) {
     comparison = 'Same as you';
   } else if (minutes !== undefined) {
@@ -947,23 +1106,69 @@ function GroupDetailModal({
   currentUserId,
   group,
   onClose,
+  onGroupChange,
   onSelectMember,
   usage,
 }: {
   currentUserId: string;
   group: ComparisonGroup | null;
   onClose: () => void;
+  onGroupChange: () => Promise<void>;
   onSelectMember: (member: ComparisonGroupMember) => void;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }) {
   if (!group) {
     return null;
   }
   const rankedMembers = group.members.map(member => ({
     member,
-    minutes: member.userId === currentUserId ? usage.totalMinutes : member.usage?.totalMinutes,
+    minutes: member.userId === currentUserId
+      ? usage?.totalMinutes ?? member.usage?.totalMinutes
+      : member.usage?.totalMinutes,
   })).sort((first, second) =>
     (first.minutes ?? Number.MAX_SAFE_INTEGER) - (second.minutes ?? Number.MAX_SAFE_INTEGER));
+  const isOwner = group.ownerId === currentUserId;
+
+  const shareCode = async () => {
+    try {
+      await Share.share({
+        message: `Join my ${group.name} group in Screen Time Social with code ${group.inviteCode}.`,
+        title: `Join ${group.name}`,
+      });
+    } catch (caught) {
+      Alert.alert(
+        'Could not open sharing',
+        caught instanceof Error ? caught.message : 'Please try again.',
+      );
+    }
+  };
+
+  const leaveGroup = () => {
+    Alert.alert(
+      isOwner ? 'Delete this group?' : 'Leave this group?',
+      isOwner
+        ? 'This removes the group for every member. This cannot be undone.'
+        : 'You will no longer see this group’s comparisons.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: isOwner ? 'Delete' : 'Leave',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await leaveComparisonGroup(group.id);
+              await onGroupChange();
+            } catch (caught) {
+              Alert.alert(
+                'Could not update group',
+                caught instanceof Error ? caught.message : 'Please try again.',
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen" visible>
@@ -984,7 +1189,9 @@ function GroupDetailModal({
               <Text style={styles.inviteCodeLabel}>PRIVATE INVITE CODE</Text>
               <Text style={styles.inviteCodeValue}>{group.inviteCode}</Text>
             </View>
-            <Text style={styles.inviteCodeHint}>Share only with people you trust</Text>
+            <Pressable accessibilityRole="button" onPress={shareCode}>
+              <Text style={styles.inviteCodeHint}>Share code ↗</Text>
+            </Pressable>
           </View>
           <View style={styles.sectionHeading}>
             <Text style={styles.sectionTitle}>Today’s ranking</Text>
@@ -1001,17 +1208,25 @@ function GroupDetailModal({
                   username: member.username,
                   initials: initialsFor(member.displayName),
                   color: member.userId === currentUserId ? colors.lime : colorForIdentity(member.userId),
-                  usage: member.userId === currentUserId ? usage : usageFromApi(member.usage),
+                  usage: member.userId === currentUserId && usage
+                    ? usage
+                    : usageFromApi(member.usage),
+                  appBreakdownShared: member.userId === currentUserId || member.appBreakdownShared !== false,
                   isMe: member.userId === currentUserId,
                 }}
                 rank={index + 1}
-                yourMinutes={usage.totalMinutes}
+                yourMinutes={rankedMembers.find(item => item.member.userId === currentUserId)?.minutes}
               />
             ))}
           </View>
           {rankedMembers.every(item => item.minutes === undefined) && (
             <Text style={styles.groupWaitingText}>Waiting for today’s first sync.</Text>
           )}
+          <Pressable onPress={leaveGroup} style={styles.destructiveButton}>
+            <Text style={styles.destructiveButtonText}>
+              {isOwner ? 'Delete group' : 'Leave group'}
+            </Text>
+          </Pressable>
         </ScrollView>
       </SafeAreaView>
     </Modal>
@@ -1057,32 +1272,48 @@ function PersonUsageModal({person, onClose}: {person: ComparePerson | null; onCl
                 </View>
                 <View style={styles.personMetricDivider} />
                 <View style={styles.personMetric}>
-                  <Text style={styles.personMetricValue}>{person.usage.apps.length}</Text>
-                  <Text style={styles.personMetricLabel}>APPS USED</Text>
+                  <Text style={styles.personMetricValue}>
+                    {person.appBreakdownShared ? person.usage.apps.length : '—'}
+                  </Text>
+                  <Text style={styles.personMetricLabel}>
+                    {person.appBreakdownShared ? 'APPS USED' : 'APPS PRIVATE'}
+                  </Text>
                 </View>
               </View>
-              <View style={styles.sectionHeading}>
-                <Text style={styles.sectionTitle}>App activity</Text>
-                <Text style={styles.sectionMeta}>TODAY</Text>
-              </View>
-              <View style={styles.card}>
-                {person.usage.apps.map((app, index) => (
-                  <View key={`${app.name}-${index}`} style={[styles.appRow, index < person.usage!.apps.length - 1 && styles.rowBorder]}>
-                    <View style={[styles.appIcon, {backgroundColor: app.color}]}>
-                      <Text style={styles.appIconText}>{app.name.charAt(0)}</Text>
-                    </View>
-                    <View style={styles.appInfo}>
-                      <View style={styles.appTitleRow}>
-                        <Text style={styles.appName}>{app.name}</Text>
-                        <Text style={styles.appTime}>{formatDuration(app.minutes)}</Text>
-                      </View>
-                      <View style={styles.progressTrack}>
-                        <View style={[styles.progressFill, {backgroundColor: app.color, width: `${Math.round((app.minutes / maxAppMinutes) * 100)}%`}]} />
-                      </View>
-                    </View>
+              {person.appBreakdownShared ? (
+                <>
+                  <View style={styles.sectionHeading}>
+                    <Text style={styles.sectionTitle}>App activity</Text>
+                    <Text style={styles.sectionMeta}>TODAY</Text>
                   </View>
-                ))}
-              </View>
+                  <View style={styles.card}>
+                    {person.usage.apps.length === 0 && (
+                      <Text style={styles.emptyFriends}>No app activity recorded yet.</Text>
+                    )}
+                    {person.usage.apps.map((app, index) => (
+                      <View key={app.id ?? `${app.name}-${index}`} style={[styles.appRow, index < person.usage!.apps.length - 1 && styles.rowBorder]}>
+                        <View style={[styles.appIcon, {backgroundColor: app.color}]}>
+                          <Text style={styles.appIconText}>{app.name.charAt(0)}</Text>
+                        </View>
+                        <View style={styles.appInfo}>
+                          <View style={styles.appTitleRow}>
+                            <Text style={styles.appName}>{app.name}</Text>
+                            <Text style={styles.appTime}>{formatDuration(app.minutes)}</Text>
+                          </View>
+                          <View style={styles.progressTrack}>
+                            <View style={[styles.progressFill, {backgroundColor: app.color, width: `${Math.round((app.minutes / maxAppMinutes) * 100)}%`}]} />
+                          </View>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <View style={styles.noUsageCard}>
+                  <Text style={styles.noUsageTitle}>App activity is private</Text>
+                  <Text style={styles.noUsageText}>{person.name} shares only their daily total and unlocks.</Text>
+                </View>
+              )}
             </>
           ) : (
             <View style={styles.noUsageCard}>
@@ -1101,15 +1332,21 @@ function TodayScreen({
   usage,
   friends,
   isDemo,
+  syncedUsage,
   onConnect,
+  onRefresh,
   onShowFriends,
+  refreshing,
 }: {
   currentUser: ApiUser;
   usage: UsageSummary;
   friends: Friend[];
   isDemo: boolean;
+  syncedUsage?: UsageSummary;
   onConnect: () => void;
+  onRefresh: () => Promise<void>;
   onShowFriends: () => void;
+  refreshing: boolean;
 }) {
   const [weeklyVisible, setWeeklyVisible] = useState(false);
   const [weeklyUsage, setWeeklyUsage] = useState<WeeklyUsageSummary | null>(null);
@@ -1133,7 +1370,7 @@ function TodayScreen({
         id: 'me',
         name: 'You',
         username: currentUser.username,
-        minutes: usage.totalMinutes,
+        minutes: isDemo ? syncedUsage?.totalMinutes : usage.totalMinutes,
         initials: currentUser.displayName
           .split(' ')
           .map(part => part.charAt(0))
@@ -1141,8 +1378,9 @@ function TodayScreen({
           .slice(0, 2),
         color: colors.lime,
       },
-    ].sort((a, b) => a.minutes - b.minutes),
-    [currentUser, friends, usage.totalMinutes],
+    ].sort((a, b) =>
+      (a.minutes ?? Number.MAX_SAFE_INTEGER) - (b.minutes ?? Number.MAX_SAFE_INTEGER)),
+    [currentUser, friends, isDemo, syncedUsage?.totalMinutes, usage.totalMinutes],
   );
 
   const openWeeklyReport = async () => {
@@ -1172,6 +1410,14 @@ function TodayScreen({
     <>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            colors={[colors.green]}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
+            tintColor={colors.green}
+          />
+        }
         showsVerticalScrollIndicator={false}>
         <ScreenHeader eyebrow="DIGITAL WELLBEING" title={greeting} />
 
@@ -1249,7 +1495,7 @@ function TodayScreen({
           )}
           {usage.apps.map((app, index) => (
             <View
-              key={app.name}
+              key={app.id ?? `${app.name}-${index}`}
               style={[styles.appRow, index < usage.apps.length - 1 && styles.rowBorder]}>
               <View style={[styles.appIcon, {backgroundColor: app.color}]}>
                 <Text style={styles.appIconText}>{app.name.charAt(0)}</Text>
@@ -1292,7 +1538,9 @@ function TodayScreen({
                 <Text style={styles.friendName}>{friend.name}</Text>
                 <Text style={styles.username}>@{friend.username}</Text>
               </View>
-              <Text style={styles.friendTime}>{formatDuration(friend.minutes)}</Text>
+              <Text style={styles.friendTime}>
+                {friend.minutes === undefined ? '—' : formatDuration(friend.minutes)}
+              </Text>
             </View>
           ))}
         </View>
@@ -1421,7 +1669,7 @@ function WeeklyReportModal({
             <View style={styles.card}>
               {report.apps.map((app, index) => (
                 <View
-                  key={app.name}
+                  key={app.id ?? `${app.name}-${index}`}
                   style={[styles.appRow, index < report.apps.length - 1 && styles.rowBorder]}>
                   <View style={[styles.appIcon, {backgroundColor: app.color}]}>
                     <Text style={styles.appIconText}>{app.name.charAt(0)}</Text>
@@ -1488,30 +1736,49 @@ function WeeklyBarChart({days}: {days: WeeklyUsageDay[]}) {
 function createDemoWeek(): WeeklyUsageSummary {
   const values = [182, 247, 211, 276, 198, 324, 252];
   const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const now = new Date();
+  const todayIndex = (now.getDay() + 6) % 7;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - todayIndex);
+  const visibleValues = values.map((value, index) => index <= todayIndex ? value : 0);
+  const totalMinutes = visibleValues.reduce((sum, value) => sum + value, 0);
   return {
     hasPermission: true,
-    totalMinutes: values.reduce((sum, value) => sum + value, 0),
-    averageMinutes: Math.round(values.reduce((sum, value) => sum + value, 0) / 7),
-    pickups: 421,
+    totalMinutes,
+    averageMinutes: Math.round(totalMinutes / (todayIndex + 1)),
+    pickups: visibleValues.reduce(
+      (sum, value, index) => sum + (value > 0 ? 50 + index : 0),
+      0,
+    ),
     days: labels.map((label, index) => ({
-      date: `demo-${index}`,
+      date: new Date(
+        monday.getFullYear(),
+        monday.getMonth(),
+        monday.getDate() + index,
+      ).toISOString(),
       label,
-      totalMinutes: values[index],
-      pickups: 50 + index,
-      isToday: index === 6,
+      totalMinutes: visibleValues[index],
+      pickups: visibleValues[index] > 0 ? 50 + index : 0,
+      isToday: index === todayIndex,
     })),
     apps: demoApps,
   };
 }
 
 function FriendsScreen({
+  currentUser,
   friends,
+  onRefresh,
   pendingRequests,
   onSocialChange,
+  refreshing,
 }: {
+  currentUser: ApiUser;
   friends: Friend[];
+  onRefresh: () => Promise<void>;
   pendingRequests: FriendshipResponse[];
   onSocialChange: () => Promise<void>;
+  refreshing: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<ApiUser | null>(null);
@@ -1531,10 +1798,10 @@ function FriendsScreen({
     try {
       setResult(await findUser(normalizedQuery));
       setSearched(true);
-    } catch {
+    } catch (caught) {
       Alert.alert(
-        'API unavailable',
-        'Start the Spring Boot server on port 8080 and try again.',
+        'Search unavailable',
+        caught instanceof Error ? caught.message : 'Check your connection and try again.',
       );
     } finally {
       setLoading(false);
@@ -1574,10 +1841,85 @@ function FriendsScreen({
     }
   };
 
+  const decline = async (friendshipId: string) => {
+    setAcceptingId(friendshipId);
+    try {
+      await declineFriendRequest(friendshipId);
+      await onSocialChange();
+    } catch (error) {
+      Alert.alert(
+        'Could not decline request',
+        error instanceof Error ? error.message : 'Please try again.',
+      );
+    } finally {
+      setAcceptingId(null);
+    }
+  };
+
+  const confirmRemoveFriend = (friend: Friend) => {
+    Alert.alert(
+      `Remove ${friend.name}?`,
+      'They will no longer appear in your circle. Shared groups are not removed.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await removeFriend(friend.id);
+              await onSocialChange();
+            } catch (caught) {
+              Alert.alert(
+                'Could not remove friend',
+                caught instanceof Error ? caught.message : 'Please try again.',
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const shareInvite = async () => {
+    try {
+      await Share.share({
+        message: `Join me on Screen Time Social. My username is @${currentUser.username}.`,
+        title: 'Join my Screen Time Social circle',
+      });
+    } catch (caught) {
+      Alert.alert(
+        'Could not open sharing',
+        caught instanceof Error ? caught.message : 'Please try again.',
+      );
+    }
+  };
+
+  const resultIsCurrentUser = result?.id === currentUser.id;
+  const resultIsFriend = result
+    ? friends.some(friend => friend.id === result.id)
+    : false;
+  const addDisabled = requestSent || resultIsCurrentUser || resultIsFriend;
+  const addLabel = resultIsCurrentUser
+    ? 'You'
+    : resultIsFriend
+      ? 'Friends'
+      : requestSent
+        ? 'Sent'
+        : 'Add';
+
   return (
     <ScrollView
       contentContainerStyle={styles.scrollContent}
       keyboardShouldPersistTaps="handled"
+      refreshControl={
+        <RefreshControl
+          colors={[colors.green]}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
+          tintColor={colors.green}
+        />
+      }
       showsVerticalScrollIndicator={false}>
       <ScreenHeader eyebrow="YOUR PEOPLE" title="Friends" />
       <Text style={styles.introText}>
@@ -1631,10 +1973,10 @@ function FriendsScreen({
           </View>
           <Pressable
             accessibilityRole="button"
-            disabled={requestSent}
+            disabled={addDisabled}
             onPress={addFriend}
-            style={[styles.addButton, requestSent && styles.addButtonSent]}>
-            <Text style={styles.addButtonText}>{requestSent ? 'Sent' : 'Add'}</Text>
+            style={[styles.addButton, addDisabled && styles.addButtonSent]}>
+            <Text style={styles.addButtonText}>{addLabel}</Text>
           </Pressable>
         </View>
       )}
@@ -1674,14 +2016,22 @@ function FriendsScreen({
                   <Text style={styles.friendName}>{request.requester.displayName}</Text>
                   <Text style={styles.username}>@{request.requester.username}</Text>
                 </View>
-                <Pressable
-                  disabled={acceptingId !== null}
-                  onPress={() => accept(request.id)}
-                  style={styles.addButton}>
-                  <Text style={styles.addButtonText}>
-                    {acceptingId === request.id ? '...' : 'Accept'}
-                  </Text>
-                </Pressable>
+                <View style={styles.requestActions}>
+                  <Pressable
+                    disabled={acceptingId !== null}
+                    onPress={() => decline(request.id)}
+                    style={styles.declineButton}>
+                    <Text style={styles.declineButtonText}>Decline</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={acceptingId !== null}
+                    onPress={() => accept(request.id)}
+                    style={styles.addButton}>
+                    <Text style={styles.addButtonText}>
+                      {acceptingId === request.id ? '...' : 'Accept'}
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
             ))}
           </View>
@@ -1707,9 +2057,21 @@ function FriendsScreen({
               <Text style={styles.friendName}>{friend.name}</Text>
               <Text style={styles.username}>@{friend.username}</Text>
             </View>
-            <View style={styles.timeStack}>
-              <Text style={styles.friendTime}>{formatDuration(friend.minutes)}</Text>
-              <Text style={styles.todayLabel}>today</Text>
+            <View style={styles.friendRowActions}>
+              <View style={styles.timeStack}>
+                <Text style={styles.friendTime}>
+                  {friend.minutes === undefined ? '—' : formatDuration(friend.minutes)}
+                </Text>
+                <Text style={styles.todayLabel}>today</Text>
+              </View>
+              <Pressable
+                accessibilityLabel={`Remove ${friend.name}`}
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => confirmRemoveFriend(friend)}
+                style={styles.friendMenuButton}>
+                <Text style={styles.friendMenuText}>•••</Text>
+              </Pressable>
             </View>
           </View>
         ))}
@@ -1717,10 +2079,10 @@ function FriendsScreen({
 
       <Pressable
         style={styles.inviteCard}
-        onPress={() => Alert.alert('Invite link copied', 'Share it with a friend to grow your circle.')}>
+        onPress={shareInvite}>
         <View>
           <Text style={styles.inviteTitle}>Bring a friend along</Text>
-          <Text style={styles.inviteText}>Share your invite link</Text>
+          <Text style={styles.inviteText}>Share your username</Text>
         </View>
         <Text style={styles.inviteArrow}>↗</Text>
       </Pressable>
@@ -1731,17 +2093,26 @@ function FriendsScreen({
 function ProfileScreen({
   isDemo,
   user,
+  onConnect,
+  onAccountDeleted,
+  onRefresh,
   onUserChange,
   onLogout,
+  refreshing,
 }: {
   isDemo: boolean;
   user: ApiUser;
+  onConnect: () => void;
+  onAccountDeleted: () => void;
+  onRefresh: () => Promise<void>;
   onUserChange: (user: ApiUser) => void;
   onLogout: () => void;
+  refreshing: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(user.username);
   const [saving, setSaving] = useState(false);
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
 
   const saveUsername = async () => {
     const normalized = draft.trim().toLowerCase().replace(/[^a-z0-9_.]/g, '');
@@ -1772,8 +2143,57 @@ function ProfileScreen({
     .slice(0, 2)
     .toUpperCase();
 
+  const updateAppSharing = async (enabled: boolean) => {
+    setSavingPrivacy(true);
+    try {
+      onUserChange(await changePrivacy(enabled));
+    } catch (caught) {
+      Alert.alert(
+        'Could not update privacy',
+        caught instanceof Error ? caught.message : 'Please try again.',
+      );
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
+
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete your account?',
+      'This permanently removes your profile, screen-time history, friendships, and groups you own.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Delete account',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteAccount();
+              onAccountDeleted();
+            } catch (caught) {
+              Alert.alert(
+                'Could not delete account',
+                caught instanceof Error ? caught.message : 'Please try again.',
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      refreshControl={
+        <RefreshControl
+          colors={[colors.green]}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
+          tintColor={colors.green}
+        />
+      }
+      showsVerticalScrollIndicator={false}>
       <ScreenHeader eyebrow="YOUR ACCOUNT" title="You" />
       <View style={styles.profileHero}>
         <View style={styles.profileAvatar}>
@@ -1818,12 +2238,26 @@ function ProfileScreen({
         <SettingRow
           title="Screen time access"
           hint={isDemo ? 'Demo data' : 'Connected'}
+          onPress={onConnect}
           tone={isDemo ? colors.danger : colors.green}
         />
         <View style={styles.rowBorder} />
         <SettingRow title="Who sees my activity" hint="Friends only" />
         <View style={styles.rowBorder} />
-        <SettingRow title="Share app breakdown" hint="On" />
+        <View style={styles.settingRow}>
+          <View style={styles.settingCopy}>
+            <Text style={styles.settingTitle}>Share app breakdown</Text>
+            <Text style={styles.settingHint}>Daily totals stay visible either way</Text>
+          </View>
+          <Switch
+            accessibilityLabel="Share app breakdown"
+            disabled={savingPrivacy}
+            onValueChange={updateAppSharing}
+            thumbColor={colors.white}
+            trackColor={{false: '#B9C0BB', true: colors.green}}
+            value={user.shareAppBreakdown ?? true}
+          />
+        </View>
       </View>
 
       <Text style={styles.privacyNote}>
@@ -1832,19 +2266,39 @@ function ProfileScreen({
       <Pressable onPress={onLogout} style={styles.logoutButton}>
         <Text style={styles.logoutText}>Sign out</Text>
       </Pressable>
+      <Pressable onPress={confirmDeleteAccount} style={styles.deleteAccountButton}>
+        <Text style={styles.deleteAccountText}>Delete account</Text>
+      </Pressable>
     </ScrollView>
   );
 }
 
-function SettingRow({title, hint, tone}: {title: string; hint: string; tone?: string}) {
-  return (
-    <Pressable style={styles.settingRow}>
+function SettingRow({
+  title,
+  hint,
+  onPress,
+  tone,
+}: {
+  title: string;
+  hint: string;
+  onPress?: () => void;
+  tone?: string;
+}) {
+  const content = (
+    <>
       <Text style={styles.settingTitle}>{title}</Text>
       <View style={styles.settingValue}>
         <Text style={[styles.settingHint, tone ? {color: tone} : undefined]}>{hint}</Text>
-        <Text style={styles.settingChevron}>›</Text>
+        {onPress && <Text style={styles.settingChevron}>›</Text>}
       </View>
+    </>
+  );
+  return onPress ? (
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.settingRow}>
+      {content}
     </Pressable>
+  ) : (
+    <View style={styles.settingRow}>{content}</View>
   );
 }
 
@@ -1982,6 +2436,12 @@ const styles = StyleSheet.create({
   addButton: {backgroundColor: colors.ink, borderRadius: 12, minWidth: 61, paddingHorizontal: 16, paddingVertical: 11},
   addButtonSent: {backgroundColor: colors.green},
   addButtonText: {color: colors.white, fontSize: 12, fontWeight: '800', textAlign: 'center'},
+  requestActions: {alignItems: 'center', flexDirection: 'row', gap: 7},
+  declineButton: {borderColor: colors.border, borderRadius: 12, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 10},
+  declineButtonText: {color: colors.danger, fontSize: 11, fontWeight: '800'},
+  friendRowActions: {alignItems: 'center', flexDirection: 'row'},
+  friendMenuButton: {alignItems: 'center', height: 36, justifyContent: 'center', marginLeft: 9, width: 30},
+  friendMenuText: {color: colors.muted, fontSize: 13, fontWeight: '800', letterSpacing: 1},
   inviteCard: {alignItems: 'center', backgroundColor: colors.lime, borderRadius: 21, flexDirection: 'row', justifyContent: 'space-between', marginTop: 18, padding: 19},
   inviteTitle: {color: colors.ink, fontSize: 16, fontWeight: '800'},
   inviteText: {color: '#4E5C35', fontSize: 12, marginTop: 4},
@@ -2004,6 +2464,8 @@ const styles = StyleSheet.create({
   privacyNote: {color: colors.muted, fontSize: 12, lineHeight: 18, paddingHorizontal: 8, paddingTop: 14, textAlign: 'center'},
   logoutButton: {alignItems: 'center', borderColor: colors.border, borderRadius: 14, borderWidth: 1, marginTop: 24, paddingVertical: 13},
   logoutText: {color: colors.danger, fontSize: 13, fontWeight: '800'},
+  deleteAccountButton: {alignItems: 'center', paddingVertical: 15},
+  deleteAccountText: {color: colors.muted, fontSize: 12, fontWeight: '700'},
   compareIntroCard: {alignItems: 'center', backgroundColor: '#10271D', borderRadius: 22, flexDirection: 'row', padding: 20},
   compareIntroCopy: {flex: 1, paddingRight: 14},
   compareIntroEyebrow: {color: colors.lime, fontFamily: fonts.medium, fontSize: 9, letterSpacing: 1.3},
@@ -2079,6 +2541,8 @@ const styles = StyleSheet.create({
   inviteCodeValue: {color: colors.lime, fontFamily: fonts.medium, fontSize: 27, fontWeight: '700', letterSpacing: 4, marginTop: 8},
   inviteCodeHint: {color: '#AAB9B0', fontFamily: fonts.regular, fontSize: 10, marginTop: 16},
   groupWaitingText: {color: colors.muted, fontFamily: fonts.regular, fontSize: 11, marginTop: 12, textAlign: 'center'},
+  destructiveButton: {alignItems: 'center', borderColor: '#E4C5C1', borderRadius: 14, borderWidth: 1, marginTop: 28, paddingVertical: 13},
+  destructiveButtonText: {color: colors.danger, fontFamily: fonts.medium, fontSize: 13},
   personHero: {alignItems: 'center', backgroundColor: '#10271D', borderRadius: 22, padding: 24},
   personHeroAvatar: {alignItems: 'center', borderRadius: 31, height: 62, justifyContent: 'center', width: 62},
   personHeroInitials: {color: colors.ink, fontFamily: fonts.medium, fontSize: 18, fontWeight: '700'},

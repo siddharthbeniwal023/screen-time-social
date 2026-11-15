@@ -4,12 +4,14 @@ import com.screentimesocial.service.AuthService;
 import com.screentimesocial.service.SocialService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.time.Instant;
 import java.util.Map;
+import jakarta.validation.ConstraintViolationException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -30,6 +32,12 @@ public class ApiExceptionHandler {
     @ResponseStatus(HttpStatus.FORBIDDEN)
     ErrorResponse forbidden(SocialService.ForbiddenException exception) {
         return error("forbidden", exception.getMessage());
+    }
+
+    @ExceptionHandler(SocialService.InvalidRequestException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ErrorResponse invalidRequest(SocialService.InvalidRequestException exception) {
+        return error("invalid_request", exception.getMessage());
     }
 
     @ExceptionHandler(AuthService.InvalidCredentialsException.class)
@@ -55,6 +63,24 @@ public class ApiExceptionHandler {
                                 : fieldError.getDefaultMessage(),
                         (first, ignored) -> first));
         return new ErrorResponse("invalid_request", "Please check the request", fields, Instant.now());
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ErrorResponse invalidParameter(ConstraintViolationException exception) {
+        Map<String, String> fields = exception.getConstraintViolations().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        violation -> violation.getPropertyPath().toString(),
+                        jakarta.validation.ConstraintViolation::getMessage,
+                        (first, ignored) -> first));
+        return new ErrorResponse(
+                "invalid_request", "Please check the request", fields, Instant.now());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ErrorResponse unreadableRequest(HttpMessageNotReadableException exception) {
+        return error("invalid_request", "The request body is missing or malformed");
     }
 
     private ErrorResponse error(String code, String message) {

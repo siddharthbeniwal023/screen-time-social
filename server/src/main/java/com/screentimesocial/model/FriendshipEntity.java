@@ -9,6 +9,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -28,10 +30,12 @@ public class FriendshipEntity {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "requester_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private UserEntity requester;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "addressee_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private UserEntity addressee;
 
     @Enumerated(EnumType.STRING)
@@ -65,6 +69,11 @@ public class FriendshipEntity {
 
     public void accept() {
         this.status = Status.ACCEPTED;
+        this.updatedAt = Instant.now();
+    }
+
+    public void decline() {
+        this.status = Status.DECLINED;
         this.updatedAt = Instant.now();
     }
 

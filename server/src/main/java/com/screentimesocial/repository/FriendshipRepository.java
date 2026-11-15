@@ -12,6 +12,10 @@ import java.util.UUID;
 
 public interface FriendshipRepository extends JpaRepository<FriendshipEntity, UUID> {
 
+    @EntityGraph(attributePaths = {"requester", "addressee"})
+    @Query("select f from FriendshipEntity f where f.requester.id = :userId or f.addressee.id = :userId")
+    List<FriendshipEntity> findAllForUser(@Param("userId") UUID userId);
+
     @Query("""
             select (count(f) > 0) from FriendshipEntity f
             where f.status <> com.screentimesocial.model.FriendshipEntity.Status.DECLINED

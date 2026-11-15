@@ -5,7 +5,6 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -40,7 +39,7 @@ public final class ApiModels {
 
     public record LoginRequest(
             @NotBlank @Email String email,
-            @NotBlank String password
+            @NotBlank @Size(max = 72) String password
     ) {
         @Override
         public String toString() {
@@ -63,14 +62,14 @@ public final class ApiModels {
         }
     }
 
-    public record RefreshRequest(@NotBlank String refreshToken) {
+    public record RefreshRequest(@NotBlank @Size(max = 512) String refreshToken) {
         @Override
         public String toString() {
             return "RefreshRequest[refreshToken=[REDACTED]]";
         }
     }
 
-    public record LogoutRequest(@NotBlank String refreshToken) {
+    public record LogoutRequest(@NotBlank @Size(max = 512) String refreshToken) {
         @Override
         public String toString() {
             return "LogoutRequest[refreshToken=[REDACTED]]";
@@ -85,7 +84,15 @@ public final class ApiModels {
     ) {
     }
 
-    public record FriendRequest(@NotBlank String addresseeUsername) {
+    public record UpdatePrivacyRequest(@NotNull Boolean shareAppBreakdown) {
+    }
+
+    public record FriendRequest(
+            @NotBlank
+            @Size(min = 3, max = 24)
+            @Pattern(regexp = USERNAME_PATTERN, message = "can only contain letters, numbers, dots, and underscores")
+            String addresseeUsername
+    ) {
     }
 
     public record CreateComparisonGroupRequest(
@@ -104,8 +111,8 @@ public final class ApiModels {
     public record SyncUsageRequest(
             @NotNull LocalDate date,
             @Min(0) @Max(1440) int totalMinutes,
-            @Min(0) int pickups,
-            @NotEmpty @Valid List<AppUsageRequest> apps
+            @Min(0) @Max(100000) int pickups,
+            @NotNull @Size(max = 100) List<@Valid AppUsageRequest> apps
     ) {
     }
 
@@ -123,7 +130,8 @@ public final class ApiModels {
             UUID id,
             String displayName,
             String username,
-            Instant createdAt
+            Instant createdAt,
+            boolean shareAppBreakdown
     ) {
     }
 
@@ -153,7 +161,8 @@ public final class ApiModels {
             UUID userId,
             String displayName,
             String username,
-            UsageResponse usage
+            UsageResponse usage,
+            boolean appBreakdownShared
     ) {
     }
 
@@ -163,7 +172,8 @@ public final class ApiModels {
             String username,
             String role,
             Instant joinedAt,
-            UsageResponse usage
+            UsageResponse usage,
+            boolean appBreakdownShared
     ) {
     }
 

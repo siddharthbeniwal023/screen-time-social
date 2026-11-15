@@ -33,6 +33,9 @@ public class UserEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "share_app_breakdown", nullable = false)
+    private boolean shareAppBreakdown;
+
     protected UserEntity() {
     }
 
@@ -45,10 +48,16 @@ public class UserEntity {
         this.username = username;
         this.createdAt = now;
         this.updatedAt = now;
+        this.shareAppBreakdown = true;
     }
 
     public void changeUsername(String username) {
         this.username = username;
+        this.updatedAt = Instant.now();
+    }
+
+    public void changePrivacy(boolean shareAppBreakdown) {
+        this.shareAppBreakdown = shareAppBreakdown;
         this.updatedAt = Instant.now();
     }
 
@@ -74,5 +83,9 @@ public class UserEntity {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public boolean isShareAppBreakdown() {
+        return shareAppBreakdown;
     }
 }

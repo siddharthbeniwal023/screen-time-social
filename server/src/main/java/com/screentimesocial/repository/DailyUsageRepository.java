@@ -14,6 +14,8 @@ import java.util.UUID;
 
 public interface DailyUsageRepository extends JpaRepository<DailyUsageEntity, UUID> {
 
+    List<DailyUsageEntity> findAllByUser_Id(UUID userId);
+
     @EntityGraph(attributePaths = "apps")
     @Query("select d from DailyUsageEntity d where d.user.id = :userId and d.usageDate = :usageDate")
     Optional<DailyUsageEntity> findByUserIdAndUsageDate(

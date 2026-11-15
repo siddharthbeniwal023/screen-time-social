@@ -1,4 +1,5 @@
 export type AppUsage = {
+  id?: string;
   name: string;
   minutes: number;
   color: string;
@@ -15,7 +16,7 @@ export type Friend = {
   id: string;
   name: string;
   username: string;
-  minutes: number;
+  minutes?: number;
   initials: string;
   color: string;
 };

@@ -18,7 +18,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 10)
+// Run after Spring's forwarded-header wrapper so request.getRemoteAddr() is the
+// actual client address when the API is behind the production reverse proxy.
+@Order(Ordered.HIGHEST_PRECEDENCE + 100)
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final long WINDOW_MILLIS = Duration.ofMinutes(1).toMillis();

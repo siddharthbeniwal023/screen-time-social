@@ -4,6 +4,7 @@ import com.screentimesocial.api.ApiModels;
 import com.screentimesocial.model.UserEntity;
 import com.screentimesocial.repository.UserRepository;
 import com.screentimesocial.repository.RefreshTokenRepository;
+import com.screentimesocial.repository.ComparisonGroupRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +45,9 @@ class SocialServiceIntegrationTest {
 
     @Autowired
     private RefreshTokenRepository refreshTokenRepository;
+
+    @Autowired
+    private ComparisonGroupRepository comparisonGroupRepository;
 
     @Autowired
     private MockMvc mockMvc;
@@ -88,11 +92,42 @@ class SocialServiceIntegrationTest {
     }
 
     @Test
+    void deletingAnAccountCascadesItsPrivateDataAndOwnedGroups() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse friend = register("Friend", "friend", "friend@example.com").user();
+        acceptFriendship(owner, friend);
+        socialService.syncUsage(owner.id(), usage(80));
+        socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest("Owned group", List.of(friend.id())),
+                LocalDate.now());
+
+        socialService.deleteAccount(owner.id());
+
+        assertThat(userRepository.findById(owner.id())).isEmpty();
+        assertThat(comparisonGroupRepository.count()).isZero();
+        assertThat(refreshTokenRepository.findAllByUser_IdAndRevokedAtIsNull(owner.id())).isEmpty();
+        assertThat(socialService.getCircle(friend.id(), LocalDate.now()))
+                .extracting(ApiModels.CircleMember::username)
+                .containsExactly("friend");
+    }
+
+    @Test
     void usernamesAreUniqueIgnoringCase() {
         register("Maya", "MayaMoves", "maya@example.com");
 
         assertThatThrownBy(() -> register("Someone else", "mayamoves", "other@example.com"))
                 .isInstanceOf(SocialService.ConflictException.class);
+    }
+
+    @Test
+    void registrationRejectsPasswordsThatExceedBcryptsUtf8ByteLimit() {
+        String unicodePassword = "🙂".repeat(19);
+
+        assertThatThrownBy(() -> authService.register(new ApiModels.RegisterRequest(
+                "Maya", "maya", "maya@example.com", unicodePassword)))
+                .isInstanceOf(SocialService.InvalidRequestException.class)
+                .hasMessageContaining("72 bytes");
     }
 
     @Test
@@ -123,6 +158,36 @@ class SocialServiceIntegrationTest {
     }
 
     @Test
+    void recipientsCanDeclineAndThePairCanSendANewRequestLater() {
+        ApiModels.UserResponse sender = register("Sender", "sender", "sender@example.com").user();
+        ApiModels.UserResponse receiver = register("Receiver", "receiver", "receiver@example.com").user();
+        ApiModels.FriendshipResponse request = socialService.requestFriend(sender.id(), receiver.username());
+
+        ApiModels.FriendshipResponse declined = socialService.declineFriend(request.id(), receiver.id());
+
+        assertThat(declined.status()).isEqualTo("DECLINED");
+        assertThat(socialService.pendingRequests(receiver.id())).isEmpty();
+        assertThat(socialService.requestFriend(sender.id(), receiver.username()).id())
+                .isNotEqualTo(request.id());
+    }
+
+    @Test
+    void eitherFriendCanRemoveAnAcceptedFriendship() {
+        ApiModels.UserResponse first = register("First", "first", "first@example.com").user();
+        ApiModels.UserResponse second = register("Second", "second", "second@example.com").user();
+        acceptFriendship(first, second);
+
+        socialService.removeFriend(second.id(), first.id());
+
+        assertThat(socialService.getCircle(first.id(), LocalDate.now()))
+                .extracting(ApiModels.CircleMember::username)
+                .containsExactly("first");
+        assertThat(socialService.getCircle(second.id(), LocalDate.now()))
+                .extracting(ApiModels.CircleMember::username)
+                .containsExactly("second");
+    }
+
+    @Test
     void syncingTheSameDayUpdatesInsteadOfCreatingADuplicate() {
         ApiModels.UserResponse user = register("Maya", "maya", "maya@example.com").user();
 
@@ -134,6 +199,38 @@ class SocialServiceIntegrationTest {
                 .singleElement()
                 .extracting(member -> member.usage().totalMinutes())
                 .isEqualTo(180);
+    }
+
+    @Test
+    void anEmptyUsageDayCanBeSynced() {
+        ApiModels.UserResponse user = register("Maya", "maya", "maya@example.com").user();
+        ApiModels.SyncUsageRequest emptyDay = new ApiModels.SyncUsageRequest(
+                LocalDate.now(), 0, 0, List.of());
+
+        ApiModels.UsageResponse saved = socialService.syncUsage(user.id(), emptyDay);
+
+        assertThat(saved.totalMinutes()).isZero();
+        assertThat(saved.apps()).isEmpty();
+    }
+
+    @Test
+    void appBreakdownPrivacyKeepsTotalsVisibleButHidesAppsFromFriends() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse friend = register("Friend", "friend", "friend@example.com").user();
+        acceptFriendship(owner, friend);
+        socialService.syncUsage(owner.id(), usage(80));
+
+        socialService.updatePrivacy(owner.id(), false);
+
+        ApiModels.CircleMember friendView = socialService.getCircle(friend.id(), LocalDate.now())
+                .stream().filter(member -> member.userId().equals(owner.id())).findFirst().orElseThrow();
+        ApiModels.CircleMember selfView = socialService.getCircle(owner.id(), LocalDate.now())
+                .stream().filter(member -> member.userId().equals(owner.id())).findFirst().orElseThrow();
+        assertThat(friendView.usage().totalMinutes()).isEqualTo(80);
+        assertThat(friendView.usage().apps()).isEmpty();
+        assertThat(friendView.appBreakdownShared()).isFalse();
+        assertThat(selfView.usage().apps()).hasSize(1);
+        assertThat(selfView.appBreakdownShared()).isTrue();
     }
 
     @Test
@@ -209,6 +306,27 @@ class SocialServiceIntegrationTest {
         assertThatThrownBy(() -> socialService.getComparisonGroup(
                 group.id(), stranger.id(), LocalDate.now()))
                 .isInstanceOf(SocialService.ForbiddenException.class);
+    }
+
+    @Test
+    void membersCanLeaveAndOwnersCanDeleteGroups() {
+        ApiModels.UserResponse owner = register("Owner", "owner", "owner@example.com").user();
+        ApiModels.UserResponse friend = register("Friend", "friend", "friend@example.com").user();
+        acceptFriendship(owner, friend);
+        ApiModels.ComparisonGroupResponse group = socialService.createComparisonGroup(
+                owner.id(),
+                new ApiModels.CreateComparisonGroupRequest("Private", List.of(friend.id())),
+                LocalDate.now());
+
+        socialService.leaveOrDeleteComparisonGroup(group.id(), friend.id());
+        assertThat(socialService.getComparisonGroup(group.id(), owner.id(), LocalDate.now()).members())
+                .extracting(ApiModels.ComparisonGroupMemberResponse::userId)
+                .containsExactly(owner.id());
+
+        socialService.leaveOrDeleteComparisonGroup(group.id(), owner.id());
+        assertThatThrownBy(() -> socialService.getComparisonGroup(
+                group.id(), owner.id(), LocalDate.now()))
+                .isInstanceOf(SocialService.NotFoundException.class);
     }
 
     @Test

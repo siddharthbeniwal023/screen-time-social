@@ -12,13 +12,18 @@ A fast MVP for sharing screen-time habits with accepted friends. The repository 
 - PostgreSQL persistence managed by Flyway migrations
 - Unique username editing and username-based friend discovery UI
 - Friend request, inbox, and acceptance flow
+- Friend request decline, friend removal, and native username sharing
+- Private comparison groups with invite-code sharing, member leave, and owner deletion
 - Privacy boundary: the circle API only includes the viewer and accepted friends
+- Per-account app-breakdown privacy while daily totals remain shareable
+- In-app account deletion with database-cascaded cleanup
 - Server-derived identity: protected routes use the verified JWT subject and accept no acting-user ID
 - Keychain/Keystore-backed mobile sessions that restore on launch and revoke on sign-out
 - Per-IP rate limits for authentication, token refresh, and username lookup
 - A public, detail-free health endpoint at `/actuator/health`
 - Android Usage Access permission flow and native `UsageStatsManager` bridge
 - Authenticated Android daily-usage sync
+- Pull-to-refresh on every main tab, app-resume refresh, request timeouts, and offline session restoration
 - Demo screen-time data, so the dashboard can be explored before platform access is configured
 
 ## Run the mobile app
@@ -111,12 +116,20 @@ Useful endpoints:
 | `GET` | `/usernames/{username}/availability` | Check username availability |
 | `GET` | `/users/search?username=...` | Find the exact username |
 | `GET` | `/me` | Get the authenticated profile |
+| `DELETE` | `/me` | Permanently delete the authenticated account and its data |
 | `PATCH` | `/me/username` | Change the authenticated user's username |
+| `PATCH` | `/me/privacy` | Toggle app-breakdown sharing |
 | `POST` | `/friend-requests` | Send a request |
 | `GET` | `/me/friend-requests` | Get incoming requests |
 | `POST` | `/friend-requests/{id}/accept` | Accept a request |
+| `POST` | `/friend-requests/{id}/decline` | Decline a request |
+| `DELETE` | `/friends/{userId}` | Remove an accepted friend |
 | `POST` | `/me/usage` | Upload the authenticated user's daily aggregate |
 | `GET` | `/me/circle?date=YYYY-MM-DD` | Get the accepted-friends leaderboard |
+| `POST` | `/groups` | Create a private comparison group |
+| `POST` | `/groups/join` | Join a group with an invite code |
+| `GET` | `/me/groups?date=YYYY-MM-DD` | List the authenticated user's groups |
+| `DELETE` | `/groups/{id}` | Leave a group, or delete it when called by its owner |
 | `GET` | `/actuator/health` | Check API and database health without exposing details |
 
 Except for registration, login, and username availability, endpoints require
@@ -134,6 +147,8 @@ Except for registration, login, and username availability, endpoints require
   hashes in PostgreSQL. Every refresh rotates the token; reused and signed-out tokens are rejected.
 - The client never sends a requester, profile, usage-owner, or circle-viewer ID. Controllers derive all of
   those values from the verified token.
+- App-level usage is omitted from friend and group responses when its owner disables breakdown sharing.
+  The owner can always see their own details.
 - Authentication and username-discovery limits are configurable through the variables in `.env.example`.
   The current limiter is intentionally in-process for the MVP; use a shared Redis-backed limiter when the
   API runs on multiple instances.
@@ -150,6 +165,9 @@ npx tsc --noEmit
 npm run lint
 npm test -- --runInBand
 ```
+
+Android release builds are intentionally not signed with the checked-in debug key. Configure the private
+release keystore in the publishing pipeline before producing a Play Store artifact.
 
 ## iOS screen-time access
 
